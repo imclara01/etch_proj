@@ -14,3 +14,4 @@ __pycache__/
 
 # Environment & Secrets (STILL IGNORED)
 .env
+archive/
