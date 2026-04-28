@@ -19,6 +19,8 @@ class SlackNotifier:
             return
 
         payload = {
+            "username": "Semiconductor Guardian",
+            "icon_emoji": ":shield:",
             "blocks": [
                 {
                     "type": "header",

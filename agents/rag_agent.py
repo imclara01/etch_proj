@@ -45,9 +45,20 @@ Guidelines:
         """
         query = """
         MATCH (f:Fault {name: $fault_name})
-        OPTIONAL MATCH (p:Part)-[:AFFECTS]->(f)
+        OPTIONAL MATCH (f)<-[:DETECTS]-(task:Task)
         OPTIONAL MATCH (f)-[:FIXED_BY]->(sop:SOP)
-        RETURN p.name as part, p.description as part_desc, sop.title as sop_title, sop.steps as sop_steps
+        OPTIONAL MATCH (cause:Cause)-[:RECOMMENDED_ACTION]->(sop)
+        OPTIONAL MATCH (cause)-[:AFFECTS_COMPONENT]->(comp:Component)
+        OPTIONAL MATCH (vsm:VirtualSensorModel)-[:PREDICTS]->(ws:WaferState)-[:INDICATES]->(risk:FaultRisk)
+        WHERE (f.name CONTAINS "Pressure" AND risk.name CONTAINS "Over Etch") OR f.name = "TCP Top Pwr Fault"
+        
+        RETURN 
+            f.name as fault,
+            sop.title as sop_title, 
+            sop.steps as sop_steps,
+            collect(DISTINCT comp.name) as components,
+            cause.name as cause_name,
+            ws.name as impacted_quality
         """
         with self.driver.session() as session:
             result = session.run(query, fault_name=fault_name)
@@ -58,9 +69,15 @@ Guidelines:
             
             context = ""
             for r in records:
-                context += f"- Related Part: {r['part']} ({r['part_desc']})\n"
+                context += f"- Fault: {r['fault']}\n"
                 context += f"- SOP Title: {r['sop_title']}\n"
                 context += f"- SOP Steps: {r['sop_steps']}\n"
+                if r['components']:
+                    context += f"- Affected Components: {', '.join(r['components'])}\n"
+                if r['cause_name']:
+                    context += f"- Potential Cause: {r['cause_name']}\n"
+                if r['impacted_quality']:
+                    context += f"- Impacted Wafer Quality: {r['impacted_quality']}\n"
             return context
 
     def get_recommendation(self, fault_name):

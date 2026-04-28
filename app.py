@@ -2,244 +2,307 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
+import os
+import json
 import plotly.express as px
 import plotly.graph_objects as go
+from dotenv import load_dotenv
+from confluent_kafka import Consumer
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 from inference import InferenceEngine
 from shap_analysis import SHAPExplainer
 from agents.shap_agent import SHAPAgent
 from agents.rag_agent import GraphRAGAgent
 from notifications.slack import SlackNotifier
-from confluent_kafka import Consumer
-import json
-from dotenv import load_dotenv
-import os
 
-# Load environment variables
+# --- Initialize Environment ---
 load_dotenv()
 if "OPEN_AI_API_KEY" in os.environ and "OPENAI_API_KEY" not in os.environ:
     os.environ["OPENAI_API_KEY"] = os.environ["OPEN_AI_API_KEY"]
 
-# --- Page Configuration ---
+# --- Page Config ---
 st.set_page_config(
-    page_title="Semiconductor Anomaly Detection Dashboard",
-    page_icon="🔬",
+    page_title="Gemini AI | Semiconductor Guardian",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- Custom CSS for Premium Look ---
+# --- Premium Gemini Design ---
 st.markdown("""
 <style>
-    .main {
-        background-color: #0e1117;
+    /* Main Background & Fonts */
+    .stApp {
+        background-color: #0B0E14;
+        color: #E3E3E3;
+        font-family: 'Inter', sans-serif;
     }
-    .stMetric {
-        background-color: #161b22;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #30363d;
+    
+    /* Custom Header */
+    .main-header {
+        font-size: 2.2rem;
+        font-weight: 800;
+        background: linear-gradient(90deg, #4285F4, #9B72F3, #D96570);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 1.5rem;
     }
-    .status-card {
-        padding: 20px;
-        border-radius: 15px;
-        margin-bottom: 20px;
-        text-align: center;
-        font-weight: bold;
-        font-size: 24px;
+    
+    /* Card Component */
+    .gemini-card {
+        background-color: #1A1C23;
+        padding: 1.5rem;
+        border-radius: 20px;
+        border: 1px solid #2D2F39;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        margin-bottom: 1rem;
     }
-    .status-normal { background-color: #1b4332; color: #74c69d; border: 1px solid #2d6a4f; }
-    .status-fault { background-color: #431b1b; color: #ff8787; border: 1px solid #6a2d2d; }
-    .status-unknown { background-color: #43361b; color: #ffd8a8; border: 1px solid #6a5a2d; }
+    
+    /* Status Badge */
+    .status-badge {
+        padding: 6px 16px;
+        border-radius: 50px;
+        font-weight: 600;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .status-normal { background: rgba(52, 168, 83, 0.1); color: #34A853; border: 1px solid #34A853; }
+    .status-fault { background: rgba(234, 67, 53, 0.1); color: #EA4335; border: 1px solid #EA4335; }
+    .status-unknown { background: rgba(251, 188, 5, 0.1); color: #FBBC05; border: 1px solid #FBBC05; }
+    
+    /* Metrics Customization */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
+        font-weight: 700 !important;
+        color: #FFFFFF !important;
+    }
+    
+    /* Sidebar glassmorphism */
+    .stSidebar {
+        background-color: #111318 !important;
+        border-right: 1px solid #2D2F39;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Initialize Engines ---
+# --- Helper Functions ---
 @st.cache_resource
 def load_engines():
     engine = InferenceEngine()
     explainer = SHAPExplainer(engine.lgb_model, engine.features)
-    # Note: We'll initialize SHAPAgent per-run or with key
     return engine, explainer
 
 engine, explainer = load_engines()
 
-# --- Sidebar ---
-st.sidebar.title("🛠 Settings")
-existing_key = os.environ.get("OPENAI_API_KEY", "")
-api_key = st.sidebar.text_input("OpenAI API Key", value=existing_key, type="password")
-if api_key:
-    os.environ["OPENAI_API_KEY"] = api_key
+# --- Sidebar Logic ---
+with st.sidebar:
+    st.image("https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d473530393318e42.svg", width=50)
+    st.markdown("<h2 style='color: white;'>Gemini Config</h2>", unsafe_allow_html=True)
+    
+    api_key = st.text_input("OpenAI API Key", value=os.environ.get("OPENAI_API_KEY", ""), type="password")
+    if api_key: os.environ["OPENAI_API_KEY"] = api_key
+    
+    st.markdown("---")
+    simulation_active = st.toggle("Start Monitoring", value=False)
+    data_source = st.radio("Pipeline Source", ["Local Simulation", "Kafka Stream"])
+    slack_active = st.toggle("Enable Slack Notification", value=False)
+    if slack_active:
+        if not os.getenv("SLACK_WEBHOOK_URL"):
+            st.warning("⚠️ Webhook URL missing in .env")
+        else:
+            st.success("🔔 Slack Alerts: Active")
+            if st.button("Send Test Alert"):
+                notifier = SlackNotifier()
+                notifier.send_alert("MANUAL TEST", "TEST_RUN_001", 0.0, 1.0, "Test message from Dashboard.")
+                st.toast("Test alert sent!")
+    
+    st.markdown("---")
+    threshold_override = st.slider("Anomaly Sensitivity", 0.0, 1.0, float(engine.threshold), 0.01)
+    engine.threshold = threshold_override
+    
+    st.caption("Agent Status: Online 🟢")
 
-simulation_active = st.sidebar.toggle("Start Monitoring", value=False)
-data_source = st.sidebar.radio("Data Source", ["Local Simulation", "Kafka Stream"])
-slack_active = st.sidebar.toggle("Enable Slack Alerts", value=False)
-threshold_override = st.sidebar.slider("Anomaly Threshold", 0.0, 1.0, float(engine.threshold), 0.01)
-engine.threshold = threshold_override
+# --- UI State Management ---
+if 'history' not in st.session_state: st.session_state.history = []
+if 'mse_trend' not in st.session_state: st.session_state.mse_trend = []
+if 'last_detection' not in st.session_state: st.session_state.last_detection = None
+if 'analysis_results' not in st.session_state: st.session_state.analysis_results = {}
+if 'executor' not in st.session_state: st.session_state.executor = ThreadPoolExecutor(max_workers=3)
 
-st.sidebar.markdown("---")
-if data_source == "Kafka Stream":
-    st.sidebar.warning("Ensure Kafka broker (localhost:9092) is running.")
-st.sidebar.info("This dashboard monitors semiconductor etching processes in real-time using a Two-Stage AI Agent (Autoencoder + LightGBM).")
+def run_deep_analysis(result, run_name, metrics, api_key, slack_active):
+    """Background task for heavy AI analysis"""
+    analysis_key = f"{run_name}_{result['status']}"
+    print(f"🚀 Starting Deep Analysis for {analysis_key}...")
+    
+    # 1. SHAP Analysis
+    try:
+        pred_idx = list(engine.le.classes_).index(result['predicted_label'])
+        sensors, contribs = explainer.explain(result['scaled_features'], pred_idx)
+    except Exception as e:
+        print(f"❌ SHAP Analysis Failed: {e}")
+        contribs = {}
 
-# --- Session State ---
-if 'history' not in st.session_state:
-    st.session_state.history = []
-if 'mse_trend' not in st.session_state:
-    st.session_state.mse_trend = []
-if 'last_detection' not in st.session_state:
-    st.session_state.last_detection = None
+    # 2. LLM SHAP Agent
+    explanation = "AI Analysis disabled (No API Key)"
+    if api_key:
+        try:
+            agent = SHAPAgent()
+            explanation = agent.explain_fault(result['status'], contribs)
+        except Exception as e:
+            print(f"❌ SHAP Agent Failed: {e}")
+            explanation = f"Error during AI analysis: {str(e)}"
+    
+    # 3. GraphRAG Agent
+    recommendation = "No recommendation available"
+    try:
+        rag_agent = GraphRAGAgent()
+        recommendation = rag_agent.get_recommendation(result['status'])
+        rag_agent.close()
+    except Exception as e:
+        print(f"❌ GraphRAG Failed: {e}")
+        recommendation = f"Knowledge retrieval error: {str(e)}"
+        
+    # 4. Slack Notification
+    if slack_active:
+        print(f"📨 Attempting to send Slack alert for {result['status']}...")
+        try:
+            notifier = SlackNotifier()
+            notifier.send_alert(result['status'], run_name, result['mse'], result['confidence'], explanation)
+        except Exception as e:
+            print(f"❌ Slack Alert Failed: {e}")
+        
+    # Store result back to session state
+    st.session_state.analysis_results[analysis_key] = {
+        "explanation": explanation,
+        "recommendation": recommendation,
+        "contribs": contribs
+    }
+    print(f"✅ Deep Analysis Completed for {analysis_key}")
 
-# --- Main Dashboard ---
-st.title("🔬 Semiconductor Process Monitoring")
+# --- Main Interface ---
+st.markdown("<h1 class='main-header'>Semiconductor Anomaly Guardian</h1>", unsafe_allow_html=True)
 
-col1, col2, col3 = st.columns(3)
+# 1. Top Metrics Section
+m_col1, m_col2, m_col3, m_col4 = st.columns([1, 1, 1, 1])
 
-# Placeholders for dynamic content
-status_placeholder = st.empty()
-metric_col1, metric_col2, metric_col3 = st.columns(3)
-chart_placeholder = st.empty()
-log_placeholder = st.empty()
+# 2. Main Chart Area
+chart_container = st.empty()
 
-# --- Simulation Logic ---
+# 3. AI Insights Area (Conditionals)
+insight_container = st.empty()
+
+# 4. Logs Area
+log_expander = st.expander("📝 System Event Logs", expanded=False)
+
+# --- Core Processing Loop ---
 if simulation_active:
+    # Setup Data Source
     if data_source == "Local Simulation":
         test_df = pd.read_csv('data/test_split.csv')
         data_iterator = test_df.iterrows()
     else:
-        # Kafka Consumer Setup
-        conf = {
-            'bootstrap.servers': 'localhost:9092',
-            'group.id': f'streamlit-group-{time.time()}',
-            'auto.offset.reset': 'latest'
-        }
+        conf = {'bootstrap.servers': 'localhost:9092', 'group.id': f'gemini-ui-{time.time()}', 'auto.offset.reset': 'latest'}
         consumer = Consumer(conf)
         consumer.subscribe(['sensor-data-stream'])
-        data_iterator = None # We'll poll manually
+        data_iterator = None
 
     while simulation_active:
+        # Data Acquisition
         if data_source == "Local Simulation":
             try:
                 _, row = next(data_iterator)
-                sample = row.to_dict()
-                run_name = sample['Run_Name']
-                metrics = sample
+                metrics = row.to_dict()
+                run_name = metrics['Run_Name']
             except StopIteration:
-                st.info("End of local data. Restarting...")
                 data_iterator = pd.read_csv('data/test_split.csv').iterrows()
                 continue
         else:
-            # Poll from Kafka
             msg = consumer.poll(1.0)
-            if msg is None:
-                status_placeholder.info("Waiting for Kafka messages...")
-                continue
-            if msg.error():
-                st.error(f"Kafka Error: {msg.error()}")
-                break
-            
+            if msg is None: continue
             data = json.loads(msg.value().decode('utf-8'))
-            run_name = data['run_name']
             metrics = data['metrics']
-            sample = metrics # For compatibility
-            
+            run_name = data['run_name']
+
+        # AI Inference
         result = engine.predict(metrics)
-        
-        # Update History
         st.session_state.mse_trend.append(result['mse'])
-        if len(st.session_state.mse_trend) > 50:
-            st.session_state.mse_trend.pop(0)
-            
-        st.session_state.last_detection = {
-            'Run_Name': run_name,
-            'Status': result['status'],
-            'MSE': result['mse'],
-            'Confidence': result['confidence'],
-            'Result': result
-        }
-        
-        if result['status'] != 'Normal':
-            st.session_state.history.insert(0, st.session_state.last_detection)
-            if len(st.session_state.history) > 10:
-                st.session_state.history.pop()
+        if len(st.session_state.mse_trend) > 60: st.session_state.mse_trend.pop(0)
 
-        # Render Metrics
-        with status_placeholder:
-            status_class = "status-normal" if result['status'] == 'Normal' else ("status-unknown" if "UNKNOWN" in result['status'] else "status-fault")
-            st.markdown(f'<div class="status-card {status_class}">Current Status: {result["status"]}</div>', unsafe_allow_html=True)
-            
-        metric_col1.metric("Anomaly Score (MSE)", f"{result['mse']:.4f}", delta=f"{result['mse'] - engine.threshold:.4f}", delta_color="inverse")
-        metric_col2.metric("LGBM Confidence", f"{result['confidence']*100:.1f}%")
-        metric_col3.metric("Processed Run", sample['Run_Name'])
+        # Update Top Metrics
+        status_style = "status-normal" if result['status'] == "Normal" else ("status-unknown" if "UNKNOWN" in result['status'] else "status-fault")
         
-        # Render Chart
-        with chart_placeholder:
-            fig = px.line(y=st.session_state.mse_trend, title="Real-time Anomaly Score (MSE) Trend")
-            fig.add_hline(y=engine.threshold, line_dash="dash", line_color="red", annotation_text="Threshold")
-            fig.update_layout(template="plotly_dark", margin=dict(l=20, r=20, t=40, b=20), height=300)
-            st.plotly_chart(fig, use_container_width=True)
-            
-        # Render Logs and SHAP in two columns
-        log_col, shap_col = st.columns([1, 1])
-        
-        with log_col:
-            st.subheader("📋 Detection History")
-            if st.session_state.history:
-                history_df = pd.DataFrame(st.session_state.history)[['Run_Name', 'Status', 'MSE', 'Confidence']]
-                st.dataframe(history_df, use_container_width=True)
-            else:
-                st.write("No anomalies detected yet.")
-                
-        with shap_col:
-            st.subheader("🎯 Root Cause Analysis")
-            if result['status'] != 'Normal':
-                pred_idx = list(engine.le.classes_).index(result['predicted_label'])
-                sensors, contribs = explainer.explain(result['scaled_features'], pred_idx)
-                
-                # Plot SHAP contributions
-                shap_df = pd.DataFrame({'Sensor': list(contribs.keys()), 'Impact': list(contribs.values())})
-                fig_shap = px.bar(shap_df, x='Impact', y='Sensor', orientation='h', title=f"Feature Impact for {result['status']}")
-                fig_shap.update_layout(template="plotly_dark", margin=dict(l=20, r=20, t=40, b=20), height=300)
-                st.plotly_chart(fig_shap, use_container_width=True)
-                
-                # --- AI Explanation ---
-                st.subheader("🤖 AI Engineer Analysis")
-                if api_key:
-                    with st.spinner("Analyzing fault patterns..."):
-                        shap_agent = SHAPAgent()
-                        explanation = shap_agent.explain_fault(result['status'], contribs)
-                        st.write(explanation)
-                    
-                    st.subheader("🛠 Recommended SOP (GraphRAG)")
-                    with st.spinner("Retrieving countermeasures from Knowledge Graph..."):
-                        rag_agent = GraphRAGAgent()
-                        try:
-                            recommendation = rag_agent.get_recommendation(result['status'])
-                            st.write(recommendation)
-                        finally:
-                            rag_agent.close()
-                    
-                    # --- Slack Notification ---
-                    if slack_active:
-                        notifier = SlackNotifier()
-                        notifier.send_alert(
-                            result['status'], 
-                            sample['Run_Name'], 
-                            result['mse'], 
-                            result['confidence'],
-                            explanation if api_key else "AI explanation disabled."
-                        )
-                else:
-                    st.warning("Please enter your OpenAI API Key in the sidebar to enable AI analysis.")
-            else:
-                st.info("System operating normally. No root cause analysis required.")
+        with m_col1:
+            st.markdown(f"**Current Status**\n<div class='status-badge {status_style}'>{result['status']}</div>", unsafe_allow_html=True)
+        m_col2.metric("MSE Score", f"{result['mse']:.4f}", delta=f"{result['mse']-engine.threshold:.3f}", delta_color="inverse")
+        m_col3.metric("LGBM Confidence", f"{result['confidence']*100:.1f}%")
+        m_col4.metric("Active Run", run_name)
 
-        if data_source == "Local Simulation":
-            time.sleep(0.5)
+        # Update Main Chart
+        with chart_container:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(y=st.session_state.mse_trend, mode='lines', line=dict(color='#4285F4', width=3), fill='tozeroy', fillcolor='rgba(66, 133, 244, 0.1)', name='MSE Score'))
+            fig.add_hline(y=engine.threshold, line_dash="dash", line_color="#EA4335", annotation_text="Threshold", annotation_font_color="#EA4335")
+            fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, t=30, b=0), height=350, yaxis=dict(gridcolor='#2D2F39'), xaxis=dict(showticklabels=False))
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+        # Update Insights (Only if Anomaly)
+        if result['status'] != "Normal":
+            analysis_key = f"{run_name}_{result['status']}"
+            
+            # Start analysis if not already done or in progress
+            if analysis_key not in st.session_state.analysis_results:
+                st.session_state.executor.submit(run_deep_analysis, result, run_name, metrics, api_key, slack_active)
+                st.session_state.analysis_results[analysis_key] = "PENDING"
+
+            with insight_container.container():
+                st.markdown("<div class='gemini-card'>", unsafe_allow_html=True)
+                i_col1, i_col2 = st.columns([1, 1])
+                
+                # Check if analysis is complete
+                analysis = st.session_state.analysis_results.get(analysis_key)
+                
+                if analysis == "PENDING":
+                    with i_col1:
+                        st.markdown("### 🤖 Root Cause Analysis (SHAP)")
+                        st.info("🔍 AI is performing deep analysis... (Data stream continues)")
+                    with i_col2:
+                        st.markdown("### 🛠 Maintenance Guide (GraphRAG)")
+                        st.info("⏳ Retrieving knowledge graph insights...")
+                elif isinstance(analysis, dict):
+                    # SHAP Analysis Display
+                    with i_col1:
+                        st.markdown("### 🤖 Root Cause Analysis (SHAP)")
+                        contribs = analysis['contribs']
+                        shap_df = pd.DataFrame({'Sensor': list(contribs.keys()), 'Impact': list(contribs.values())})
+                        fig_shap = px.bar(shap_df, x='Impact', y='Sensor', orientation='h', color='Impact', color_continuous_scale='RdBu_r')
+                        fig_shap.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, t=10, b=0), height=250, coloraxis_showscale=False)
+                        st.plotly_chart(fig_shap, use_container_width=True, config={'displayModeBar': False})
+                        st.markdown(f"<div style='font-size: 0.95rem; color: #CCC;'>{analysis['explanation']}</div>", unsafe_allow_html=True)
+
+                    # GraphRAG Recommendation Display
+                    with i_col2:
+                        st.markdown("### 🛠 Maintenance Guide (GraphRAG)")
+                        st.markdown(f"<div style='font-size: 0.95rem; color: #CCC;'>{analysis['recommendation']}</div>", unsafe_allow_html=True)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+            # Update Log
+            st.session_state.history.insert(0, {"Time": time.strftime("%H:%M:%S"), "Run": run_name, "Status": result['status'], "MSE": f"{result['mse']:.4f}"})
+            if len(st.session_state.history) > 20: st.session_state.history.pop()
+            with log_expander:
+                st.table(pd.DataFrame(st.session_state.history))
+
+        if data_source == "Local Simulation": time.sleep(0.4)
     
-    if data_source == "Kafka Stream":
-        consumer.close()
+    if data_source == "Kafka Stream": consumer.close()
+
 else:
-    st.warning("Monitoring is paused. Start monitoring to see real-time data.")
-    if st.session_state.last_detection:
-        st.write("Last processed run summary:")
-        st.json(st.session_state.last_detection)
+    st.markdown("""
+    <div style='text-align: center; padding: 100px;'>
+        <h3 style='color: #888;'>System Standby</h3>
+        <p>Please toggle 'Start Monitoring' in the sidebar to begin real-time analysis.</p>
+    </div>
+    """, unsafe_allow_html=True)

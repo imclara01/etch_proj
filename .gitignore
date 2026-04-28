@@ -3,18 +3,14 @@
 __pycache__/
 *.pyc
 
-# Data & Models (Large Files)
-data/
-models/
-*.csv
-*.pth
-*.joblib
-*.png
+# Data & Models (Now allowed by user request)
+# data/
+# models/
+# scratch/
 
-# Environment & Secrets
-.env
+# Files to keep ignored
+*.png
 .DS_Store
 
-# Scratch & Archive
-archive/
-scratch/
+# Environment & Secrets (STILL IGNORED)
+.env
