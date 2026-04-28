@@ -1,0 +1,15 @@
+pandas
+numpy
+scipy
+matplotlib
+seaborn
+scikit-learn
+imbalanced-learn
+lightgbm
+ipykernel
+shap
+langgraph
+langchain
+langchain-openai
+h5py
+slack-sdk

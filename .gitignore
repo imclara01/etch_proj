@@ -1,0 +1,20 @@
+# Virtual Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Data & Models (Large Files)
+data/
+models/
+*.csv
+*.pth
+*.joblib
+*.png
+
+# Environment & Secrets
+.env
+.DS_Store
+
+# Scratch & Archive
+archive/
+scratch/
