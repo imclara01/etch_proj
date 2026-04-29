@@ -20,17 +20,20 @@ class GraphRAGAgent:
         
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a Senior Semiconductor Maintenance Expert. 
-Your goal is to provide specific troubleshooting recommendations and Standard Operating Procedures (SOPs) based on information retrieved from a Knowledge Graph.
+Your goal is to provide specific troubleshooting recommendations and Standard Operating Procedures (SOPs) based on information retrieved from a Knowledge Graph and real-time sensor anomalies.
 
-Retrieved Context:
+Knowledge Graph Context:
 {context}
+
+Real-time Sensor Anomalies (SHAP):
+{shap_context}
 
 Detected Fault: {fault_name}
 
 Guidelines:
-1. Clearly identify which part is likely causing the issue.
-2. Summarize the steps for the engineer to follow based on the SOP.
-3. Be concise and practical.
+1. Combine the Knowledge Graph SOP with the specific sensor anomalies reported by SHAP.
+2. If SHAP indicates a specific sensor is 'High' or 'Low', prioritize troubleshooting steps related to that sensor's subsystem.
+3. Clearly identify which part is likely causing the issue and summarize the SOP steps.
 4. Output should be in Korean."""),
             ("user", "What are the recommended countermeasures for the {fault_name}?")
         ])
@@ -80,14 +83,21 @@ Guidelines:
                     context += f"- Impacted Wafer Quality: {r['impacted_quality']}\n"
             return context
 
-    def get_recommendation(self, fault_name):
+    def get_recommendation(self, fault_name, shap_analysis=None):
         # 1. Retrieve data from Neo4j
         context = self.get_context_from_graph(fault_name)
         
-        # 2. Generate response using LLM
+        # 2. Format SHAP context if available
+        shap_context = "No real-time sensor analysis provided."
+        if shap_analysis:
+            import json
+            shap_context = json.dumps(shap_analysis, indent=2, ensure_ascii=False)
+            
+        # 3. Generate response using LLM
         try:
             response = self.chain.invoke({
                 "context": context,
+                "shap_context": shap_context,
                 "fault_name": fault_name
             })
             return response

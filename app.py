@@ -30,61 +30,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Premium Gemini Design ---
 st.markdown("""
 <style>
-    /* Main Background & Fonts */
-    .stApp {
-        background-color: #0B0E14;
-        color: #E3E3E3;
-        font-family: 'Inter', sans-serif;
-    }
+    .stApp { background-color: #0E1117; color: #FFFFFF; font-family: 'Inter', sans-serif; }
     
-    /* Custom Header */
+    /* Simplified Header */
     .main-header {
-        font-size: 2.2rem;
-        font-weight: 800;
-        background: linear-gradient(90deg, #4285F4, #9B72F3, #D96570);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 1.5rem;
+        font-size: 1.8rem; font-weight: 700; color: #4285F4; margin-bottom: 1rem;
     }
     
-    /* Card Component */
-    .gemini-card {
-        background-color: #1A1C23;
-        padding: 1.5rem;
-        border-radius: 20px;
-        border: 1px solid #2D2F39;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-        margin-bottom: 1rem;
+    /* Equipment Card */
+    .eq-card {
+        background-color: #1A1C23; padding: 1rem; border-radius: 12px;
+        border: 1px solid #2D2F39; margin-bottom: 0.5rem;
     }
     
-    /* Status Badge */
-    .status-badge {
-        padding: 6px 16px;
-        border-radius: 50px;
-        font-weight: 600;
-        font-size: 0.9rem;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    .status-normal { background: rgba(52, 168, 83, 0.1); color: #34A853; border: 1px solid #34A853; }
-    .status-fault { background: rgba(234, 67, 53, 0.1); color: #EA4335; border: 1px solid #EA4335; }
-    .status-unknown { background: rgba(251, 188, 5, 0.1); color: #FBBC05; border: 1px solid #FBBC05; }
+    /* Status Colors */
+    .status-normal { color: #34A853; font-weight: bold; }
+    .status-fault { color: #EA4335; font-weight: bold; }
+    .status-unknown { color: #FBBC05; font-weight: bold; }
     
-    /* Metrics Customization */
-    [data-testid="stMetricValue"] {
-        font-size: 1.8rem !important;
-        font-weight: 700 !important;
-        color: #FFFFFF !important;
-    }
-    
-    /* Sidebar glassmorphism */
-    .stSidebar {
-        background-color: #111318 !important;
-        border-right: 1px solid #2D2F39;
-    }
+    /* Metrics */
+    [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -127,30 +94,32 @@ with st.sidebar:
 
 # --- UI State Management ---
 if 'history' not in st.session_state: st.session_state.history = []
-if 'mse_trend' not in st.session_state: st.session_state.mse_trend = []
-if 'last_detection' not in st.session_state: st.session_state.last_detection = None
+if 'mse_trend' not in st.session_state: st.session_state.mse_trend = {} # Per equipment
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = {}
-if 'executor' not in st.session_state: st.session_state.executor = ThreadPoolExecutor(max_workers=3)
+if 'executor' not in st.session_state: st.session_state.executor = ThreadPoolExecutor(max_workers=5)
+if 'active_dialog' not in st.session_state: st.session_state.active_dialog = None
 
-def run_deep_analysis(result, run_name, metrics, api_key, slack_active):
-    """Background task for heavy AI analysis"""
-    analysis_key = f"{run_name}_{result['status']}"
-    print(f"🚀 Starting Deep Analysis for {analysis_key}...")
+@st.cache_data(show_spinner=False)
+def perform_ai_analysis(fault_status, metrics_dict, run_name, api_key, slack_active):
+    """Cached function for heavy AI analysis to avoid redundant LLM calls"""
+    print(f"🚀 Starting AI Analysis for {run_name} ({fault_status})...")
     
     # 1. SHAP Analysis
     try:
-        pred_idx = list(engine.le.classes_).index(result['predicted_label'])
-        sensors, contribs = explainer.explain(result['scaled_features'], pred_idx)
+        # We need the engines here, but since they are cached/global it's fine
+        # Note: engine and explainer are defined in the global scope
+        pred_idx = list(engine.le.classes_).index(fault_status)
+        analysis_data = explainer.explain(engine.scaler.transform(pd.DataFrame([metrics_dict])[engine.features]), metrics_dict, pred_idx)
     except Exception as e:
         print(f"❌ SHAP Analysis Failed: {e}")
-        contribs = {}
+        analysis_data = []
 
     # 2. LLM SHAP Agent
     explanation = "AI Analysis disabled (No API Key)"
     if api_key:
         try:
             agent = SHAPAgent()
-            explanation = agent.explain_fault(result['status'], contribs)
+            explanation = agent.explain_fault(fault_status, analysis_data)
         except Exception as e:
             print(f"❌ SHAP Agent Failed: {e}")
             explanation = f"Error during AI analysis: {str(e)}"
@@ -159,7 +128,7 @@ def run_deep_analysis(result, run_name, metrics, api_key, slack_active):
     recommendation = "No recommendation available"
     try:
         rag_agent = GraphRAGAgent()
-        recommendation = rag_agent.get_recommendation(result['status'])
+        recommendation = rag_agent.get_recommendation(fault_status, shap_analysis=analysis_data)
         rag_agent.close()
     except Exception as e:
         print(f"❌ GraphRAG Failed: {e}")
@@ -167,35 +136,55 @@ def run_deep_analysis(result, run_name, metrics, api_key, slack_active):
         
     # 4. Slack Notification
     if slack_active:
-        print(f"📨 Attempting to send Slack alert for {result['status']}...")
+        print(f"📨 Attempting to send Slack alert for {fault_status}...")
         try:
             notifier = SlackNotifier()
-            notifier.send_alert(result['status'], run_name, result['mse'], result['confidence'], explanation)
+            notifier.send_alert(fault_status, run_name, 0.0, 1.0, explanation) # MSE/Conf simplified here
         except Exception as e:
             print(f"❌ Slack Alert Failed: {e}")
-        
-    # Store result back to session state
-    st.session_state.analysis_results[analysis_key] = {
+            
+    print(f"✅ AI Analysis Completed for {run_name}")
+    return {
         "explanation": explanation,
         "recommendation": recommendation,
-        "contribs": contribs
+        "analysis_data": analysis_data
     }
-    print(f"✅ Deep Analysis Completed for {analysis_key}")
+
+@st.dialog("🚨 Anomaly Diagnosis")
+def show_analysis_dialog(analysis):
+    i_col1, i_col2 = st.columns([1, 1])
+    with i_col1:
+        st.markdown("### 🤖 Root Cause (SHAP)")
+        analysis_data = analysis.get('analysis_data', [])
+        if analysis_data:
+            stats_df = pd.DataFrame(analysis_data)
+            display_df = stats_df[['sensor', 'current_value', 'mean_value', 'status']].copy()
+            display_df.columns = ['Sensor', 'Value', 'Normal', 'Status']
+            st.table(display_df)
+        st.markdown(f"<div style='font-size: 0.9rem;'>{analysis['explanation']}</div>", unsafe_allow_html=True)
+    
+    with i_col2:
+        st.markdown("### 🛠 Maintenance Guide (GraphRAG)")
+        st.markdown(f"<div style='font-size: 0.9rem;'>{analysis['recommendation']}</div>", unsafe_allow_html=True)
 
 # --- Main Interface ---
-st.markdown("<h1 class='main-header'>Semiconductor Anomaly Guardian</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='main-header'>Semiconductor Anomaly Command Center</h1>", unsafe_allow_html=True)
 
-# 1. Top Metrics Section
-m_col1, m_col2, m_col3, m_col4 = st.columns([1, 1, 1, 1])
+# Grid Layout for 10 Equipments (2x5)
+eq_placeholders = {}
+cols = st.columns(2)
+for i in range(10):
+    eq_name = f"EQ-{i+1:02d}"
+    with cols[i % 2]:
+        container = st.container()
+        eq_placeholders[eq_name] = {
+            "status": container.empty(),
+            "metrics": container.empty(),
+            "chart": container.empty(),
+            "button": container.empty()
+        }
 
-# 2. Main Chart Area
-chart_container = st.empty()
-
-# 3. AI Insights Area (Conditionals)
-insight_container = st.empty()
-
-# 4. Logs Area
-log_expander = st.expander("📝 System Event Logs", expanded=False)
+log_expander = st.expander("📝 Recent Event Logs", expanded=False)
 
 # --- Core Processing Loop ---
 if simulation_active:
@@ -216,6 +205,7 @@ if simulation_active:
                 _, row = next(data_iterator)
                 metrics = row.to_dict()
                 run_name = metrics['Run_Name']
+                eq_id = "EQ-01" # Mock source for EQ-01
             except StopIteration:
                 data_iterator = pd.read_csv('data/test_split.csv').iterrows()
                 continue
@@ -225,72 +215,45 @@ if simulation_active:
             data = json.loads(msg.value().decode('utf-8'))
             metrics = data['metrics']
             run_name = data['run_name']
+            eq_id = data.get('equipment_id', "EQ-01")
 
         # AI Inference
         result = engine.predict(metrics)
-        st.session_state.mse_trend.append(result['mse'])
-        if len(st.session_state.mse_trend) > 60: st.session_state.mse_trend.pop(0)
-
-        # Update Top Metrics
-        status_style = "status-normal" if result['status'] == "Normal" else ("status-unknown" if "UNKNOWN" in result['status'] else "status-fault")
         
-        with m_col1:
-            st.markdown(f"**Current Status**\n<div class='status-badge {status_style}'>{result['status']}</div>", unsafe_allow_html=True)
-        m_col2.metric("MSE Score", f"{result['mse']:.4f}", delta=f"{result['mse']-engine.threshold:.3f}", delta_color="inverse")
-        m_col3.metric("LGBM Confidence", f"{result['confidence']*100:.1f}%")
-        m_col4.metric("Active Run", run_name)
+        # Update Trend Data
+        if eq_id not in st.session_state.mse_trend: st.session_state.mse_trend[eq_id] = []
+        st.session_state.mse_trend[eq_id].append(result['mse'])
+        if len(st.session_state.mse_trend[eq_id]) > 30: st.session_state.mse_trend[eq_id].pop(0)
 
-        # Update Main Chart
-        with chart_container:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(y=st.session_state.mse_trend, mode='lines', line=dict(color='#4285F4', width=3), fill='tozeroy', fillcolor='rgba(66, 133, 244, 0.1)', name='MSE Score'))
-            fig.add_hline(y=engine.threshold, line_dash="dash", line_color="#EA4335", annotation_text="Threshold", annotation_font_color="#EA4335")
-            fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, t=30, b=0), height=350, yaxis=dict(gridcolor='#2D2F39'), xaxis=dict(showticklabels=False))
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-        # Update Insights (Only if Anomaly)
-        if result['status'] != "Normal":
-            analysis_key = f"{run_name}_{result['status']}"
+        # Update Equipment Card
+        if eq_id in eq_placeholders:
+            ph = eq_placeholders[eq_id]
+            status_class = "status-normal" if result['status'] == "Normal" else "status-fault"
+            ph['status'].markdown(f"### {eq_id} | <span class='{status_class}'>{result['status']}</span>", unsafe_allow_html=True)
             
-            # Start analysis if not already done or in progress
-            if analysis_key not in st.session_state.analysis_results:
-                st.session_state.executor.submit(run_deep_analysis, result, run_name, metrics, api_key, slack_active)
-                st.session_state.analysis_results[analysis_key] = "PENDING"
+            m1, m2, m3 = ph['metrics'].columns(3)
+            m1.metric("MSE", f"{result['mse']:.3f}")
+            m2.metric("Conf", f"{result['confidence']:.1%}")
+            m3.metric("Run", run_name)
+            
+            with ph['chart']:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(y=st.session_state.mse_trend[eq_id], mode='lines', line=dict(color='#4285F4', width=2), fill='tozeroy'))
+                fig.add_hline(y=engine.threshold, line_dash="dash", line_color="#EA4335")
+                fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, t=0, b=0), height=120, showlegend=False, yaxis=dict(showticklabels=False), xaxis=dict(showticklabels=False))
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-            with insight_container.container():
-                st.markdown("<div class='gemini-card'>", unsafe_allow_html=True)
-                i_col1, i_col2 = st.columns([1, 1])
-                
-                # Check if analysis is complete
-                analysis = st.session_state.analysis_results.get(analysis_key)
-                
-                if analysis == "PENDING":
-                    with i_col1:
-                        st.markdown("### 🤖 Root Cause Analysis (SHAP)")
-                        st.info("🔍 AI is performing deep analysis... (Data stream continues)")
-                    with i_col2:
-                        st.markdown("### 🛠 Maintenance Guide (GraphRAG)")
-                        st.info("⏳ Retrieving knowledge graph insights...")
-                elif isinstance(analysis, dict):
-                    # SHAP Analysis Display
-                    with i_col1:
-                        st.markdown("### 🤖 Root Cause Analysis (SHAP)")
-                        contribs = analysis['contribs']
-                        shap_df = pd.DataFrame({'Sensor': list(contribs.keys()), 'Impact': list(contribs.values())})
-                        fig_shap = px.bar(shap_df, x='Impact', y='Sensor', orientation='h', color='Impact', color_continuous_scale='RdBu_r')
-                        fig_shap.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, t=10, b=0), height=250, coloraxis_showscale=False)
-                        st.plotly_chart(fig_shap, use_container_width=True, config={'displayModeBar': False})
-                        st.markdown(f"<div style='font-size: 0.95rem; color: #CCC;'>{analysis['explanation']}</div>", unsafe_allow_html=True)
+        # Trigger AI Analysis
+        if result['status'] != "Normal":
+            # Using cached function to avoid re-running expensive LLM calls for the same event
+            # We use a combined key to ensure we only analyze once per unique event
+            analysis = perform_ai_analysis(result['status'], metrics, run_name, api_key, slack_active)
+            
+            if eq_id in eq_placeholders:
+                if ph['button'].button(f"🔍 View {eq_id} Analysis", key=f"btn_{run_name}"):
+                    show_analysis_dialog(analysis)
 
-                    # GraphRAG Recommendation Display
-                    with i_col2:
-                        st.markdown("### 🛠 Maintenance Guide (GraphRAG)")
-                        st.markdown(f"<div style='font-size: 0.95rem; color: #CCC;'>{analysis['recommendation']}</div>", unsafe_allow_html=True)
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-                
-            # Update Log
-            st.session_state.history.insert(0, {"Time": time.strftime("%H:%M:%S"), "Run": run_name, "Status": result['status'], "MSE": f"{result['mse']:.4f}"})
+            st.session_state.history.insert(0, {"Time": time.strftime("%H:%M:%S"), "EQ": eq_id, "Status": result['status'], "MSE": f"{result['mse']:.4f}"})
             if len(st.session_state.history) > 20: st.session_state.history.pop()
             with log_expander:
                 st.table(pd.DataFrame(st.session_state.history))
