@@ -97,7 +97,10 @@ if 'history' not in st.session_state: st.session_state.history = []
 if 'mse_trend' not in st.session_state: st.session_state.mse_trend = {} # Per equipment
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = {}
 if 'executor' not in st.session_state: st.session_state.executor = ThreadPoolExecutor(max_workers=5)
-if 'active_dialog' not in st.session_state: st.session_state.active_dialog = None
+if 'active_analysis' not in st.session_state: st.session_state.active_analysis = None
+
+def trigger_analysis(analysis):
+    st.session_state.active_analysis = analysis
 
 @st.cache_data(show_spinner=False)
 def perform_ai_analysis(fault_status, predicted_label, metrics_dict, run_name, api_key, slack_active):
@@ -168,6 +171,11 @@ def show_analysis_dialog(analysis):
 
 # --- Main Interface ---
 st.markdown("<h1 class='main-header'>Semiconductor Anomaly Command Center</h1>", unsafe_allow_html=True)
+
+# Check if we need to show analysis dialog
+if st.session_state.active_analysis:
+    show_analysis_dialog(st.session_state.active_analysis)
+    st.session_state.active_analysis = None # Reset after showing
 
 # Grid Layout for 10 Equipments (2x5)
 eq_placeholders = {}
@@ -248,8 +256,8 @@ if simulation_active:
             analysis = perform_ai_analysis(result['status'], result['predicted_label'], metrics, run_name, api_key, slack_active)
             
             if eq_id in eq_placeholders:
-                if ph['button'].button(f"🔍 View {eq_id} Analysis", key=f"btn_{run_name}"):
-                    show_analysis_dialog(analysis)
+                if ph['button'].button(f"🔍 View {eq_id} Analysis", key=f"btn_{run_name}", on_click=trigger_analysis, args=(analysis,)):
+                    pass
 
             st.session_state.history.insert(0, {"Time": time.strftime("%H:%M:%S"), "EQ": eq_id, "Status": result['status'], "MSE": f"{result['mse']:.4f}"})
             if len(st.session_state.history) > 20: st.session_state.history.pop()
