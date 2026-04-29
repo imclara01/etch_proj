@@ -100,18 +100,17 @@ if 'executor' not in st.session_state: st.session_state.executor = ThreadPoolExe
 if 'active_dialog' not in st.session_state: st.session_state.active_dialog = None
 
 @st.cache_data(show_spinner=False)
-def perform_ai_analysis(fault_status, metrics_dict, run_name, api_key, slack_active):
+def perform_ai_analysis(fault_status, predicted_label, metrics_dict, run_name, api_key, slack_active):
     """Cached function for heavy AI analysis to avoid redundant LLM calls"""
     print(f"🚀 Starting AI Analysis for {run_name} ({fault_status})...")
     
     # 1. SHAP Analysis
     try:
-        # We need the engines here, but since they are cached/global it's fine
-        # Note: engine and explainer are defined in the global scope
-        pred_idx = list(engine.le.classes_).index(fault_status)
+        # Use predicted_label for SHAP even if status is UNKNOWN
+        pred_idx = list(engine.le.classes_).index(predicted_label)
         analysis_data = explainer.explain(engine.scaler.transform(pd.DataFrame([metrics_dict])[engine.features]), metrics_dict, pred_idx)
     except Exception as e:
-        print(f"❌ SHAP Analysis Failed: {e}")
+        print(f"❌ SHAP Analysis Failed for {predicted_label}: {e}")
         analysis_data = []
 
     # 2. LLM SHAP Agent
@@ -245,9 +244,8 @@ if simulation_active:
 
         # Trigger AI Analysis
         if result['status'] != "Normal":
-            # Using cached function to avoid re-running expensive LLM calls for the same event
-            # We use a combined key to ensure we only analyze once per unique event
-            analysis = perform_ai_analysis(result['status'], metrics, run_name, api_key, slack_active)
+            # Pass both the display status and the internal predicted label for SHAP
+            analysis = perform_ai_analysis(result['status'], result['predicted_label'], metrics, run_name, api_key, slack_active)
             
             if eq_id in eq_placeholders:
                 if ph['button'].button(f"🔍 View {eq_id} Analysis", key=f"btn_{run_name}"):
