@@ -53,121 +53,108 @@ class Autoencoder(nn.Module):
 class InferenceEngine:
     # [기존] def __init__(self, model_dir='models'):
     # [변경] 모델 경로 외에 동적 임계치 파라미터와 신뢰도 기준값을 외부에서 받도록 확장
-    def __init__(self, model_dir='models', lgbm_confidence_threshold=0.6, window_size=100, std_multiplier=3.0):
+    def __init__(self, model_dir='models', lgbm_confidence_threshold=0.90, very_high_threshold=0.95, window_size=100, std_multiplier=2.0):
         self.model_dir = model_dir
         self.lgbm_confidence_threshold = lgbm_confidence_threshold
+        self.very_high_threshold = very_high_threshold
         
         # [추가] 동적 임계치 알고리즘 (Sliding Window) 세팅
-        self.window_size = window_size         # 최근 몇 개의 데이터를 기준으로 삼을지
-        self.std_multiplier = std_multiplier   # [수정] 2.0 -> 3.0 (더 보수적으로 정상 범위 설정)
+        self.window_size = window_size         
+        self.std_multiplier = std_multiplier   
         self.mse_history = deque(maxlen=self.window_size)
-
-        # [추가] CPU/GPU 자동 할당 (대용량 처리용)
+        
+        # ... (생략된 기존 초기화 코드)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"추론 엔진 초기화 됨. 할당된 디바이스: {self.device}")
-
-        # [추가] 모델 로드 시 에러 방어 로직
-        try:
-            self._load_models()
-        except Exception as e:
-            logger.critical(f"모델을 불러오는 중 치명적 오류 발생: {e}")
-            raise
+        self._load_models()
 
     def _load_models(self):
-        # [기존] ae_data = torch.load(ae_path, weights_only=False)
-        # [변경] GPU/CPU 디바이스 환경에 맞춰서 텐서를 로드하도록 map_location 추가
         ae_path = os.path.join(self.model_dir, 'autoencoder.pth')
         ae_data = torch.load(ae_path, map_location=self.device, weights_only=False)
         self.features = [f.strip() for f in ae_data['features']]
-        
-        # [기존] self.threshold = ae_data['threshold']
-        # [변경] 고정 임계치는 '최소 방어선(base_threshold)'으로만 사용
         self.base_threshold = ae_data['threshold']
+        self.suspect_threshold = ae_data.get('suspect_threshold', self.base_threshold * 0.8)
         
-        # [기존] self.model_ae = Autoencoder(len(self.features))
-        # [변경] 모델을 로드하자마자 설정된 디바이스(GPU/CPU)로 보냄
         self.model_ae = Autoencoder(len(self.features)).to(self.device)
         self.model_ae.load_state_dict(ae_data['model_state_dict'])
         self.model_ae.eval()
-        
         self.scaler = joblib.load(os.path.join(self.model_dir, 'scaler.joblib'))
         self.lgb_model = joblib.load(os.path.join(self.model_dir, 'lightgbm_model.joblib'))
         self.le = joblib.load(os.path.join(self.model_dir, 'label_encoder.joblib'))
 
-    def predict(self, metrics_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """단일 센서 데이터 이상 탐지 및 분류 (동적 임계치 적용)"""
-        # [추가] 센서 통신 끊김 등으로 빈 데이터가 올 때 서버 다운 방지
+    def predict(self, metrics_dict: Dict[str, Any], override_threshold=None) -> Dict[str, Any]:
+        """단일 센서 데이터 이상 탐지 및 분류 (Suspect Zone 포함 5단계 판별 로직)"""
         if not metrics_dict:
             return {"status": "ERROR", "message": "입력 데이터가 없습니다."}
         
-        # [추가] 모든 입력 키의 공백을 제거하여 모델 피처와 일치시킴
         metrics_dict = {k.strip(): v for k, v in metrics_dict.items()}
 
         try:
-            # [기존] X_df = pd.DataFrame([row_dict])[self.features] -> 느린 Pandas 방식
-            # [변경] Pandas 데이터프레임 생성을 없애고, 초고속 Numpy 배열로 직행
             row_list = [float(metrics_dict.get(f, 0.0)) for f in self.features]
             X_array = np.array(row_list).reshape(1, -1)
             X_scaled = self.scaler.transform(X_array)
-            
-            # [기존] X_tensor = torch.FloatTensor(X_scaled)
-            # [변경] 텐서를 디바이스로 보냄
             X_tensor = torch.FloatTensor(X_scaled).to(self.device)
             
             with torch.no_grad():
                 recon = self.model_ae(X_tensor)
                 mse = torch.mean((X_tensor - recon)**2).item()
             
-            # --- [추가/핵심] 동적 임계치 알고리즘 (Sliding Window) ---
-            # [수정] Threshold Drift 방지: 임계치를 먼저 계산하고, 정상일 때만 기록을 업데이트함
-            
-            # 1. 현재 기록(mse_history) 기반으로 임계치 먼저 산출
-            if len(self.mse_history) >= 10:
-                current_mean = np.mean(self.mse_history)
-                current_std = np.std(self.mse_history)
-                # [수정] 지나치게 민감하게 하향되는 것을 방지하기 위해 최소 표준편차 보정값(0.05) 추가
-                dynamic_threshold = current_mean + (self.std_multiplier * max(current_std, 0.05))
-                
-                # [수정] 상/하한선(Clip) 범위를 base_threshold 기준으로 더 안정적으로 설정
-                upper_bound = self.base_threshold * 2.0
-                lower_bound = self.base_threshold * 0.5  # [수정] 너무 낮아지지 않도록 제한
-                current_threshold = max(min(dynamic_threshold, upper_bound), lower_bound)
+            # 1. 임계치 결정
+            if override_threshold is not None:
+                current_threshold = override_threshold
             else:
                 current_threshold = self.base_threshold
 
-            # 2. 이상 여부 판별 (Hybrid 방식: AE 임계치 초과 OR LGBM 고신뢰도 예측)
-            # [수정] AE가 놓친 미세 결함을 LGBM의 고신뢰도(0.9 이상) 판단으로 보완
+            # 2. 분류 모델 예측
             probs = self.lgb_model.predict_proba(X_scaled)[0]
             max_prob = float(np.max(probs))
             pred_idx = int(np.argmax(probs))
             pred_label = self.le.inverse_transform([pred_idx])[0]
 
+            # 3. 고도화된 5단계 판단 로직
             ae_anomaly = mse > current_threshold
-            lgbm_high_conf = (max_prob > 0.9 and pred_label != 'Normal')
-            is_anomaly = ae_anomaly or lgbm_high_conf
+            ae_suspect = mse > self.suspect_threshold
+            
+            if ae_anomaly:
+                if max_prob >= self.lgbm_confidence_threshold:
+                    final_status = pred_label
+                    is_anomaly = True
+                else:
+                    final_status = "UNKNOWN FAULT"
+                    is_anomaly = True
+            elif ae_suspect:
+                # [신규] Suspect Zone: AE는 정상이라지만 MSE가 약간 높고, LGBM이 극도로 불확실할 때
+                if max_prob < 0.3: # 극도로 불확실
+                    final_status = "UNKNOWN FAULT"
+                    is_anomaly = True
+                else:
+                    final_status = "Normal"
+                    is_anomaly = False
+            else:
+                if max_prob >= self.very_high_threshold and pred_label != 'Normal':
+                    final_status = pred_label
+                    is_anomaly = True
+                else:
+                    final_status = "Normal"
+                    is_anomaly = False
 
-            # 3. [핵심] 정상 데이터인 경우에만 history 업데이트 (Threshold Drift 방지)
+            # 4. 정상 데이터인 경우에만 history 업데이트 (Threshold Drift 방지)
             if not is_anomaly:
                 capped_mse = min(mse, self.base_threshold * 2.0)
                 self.mse_history.append(capped_mse)
-            # --------------------------------------------------------
-            
-            final_status = pred_label
-            if is_anomaly:
-                # [변경] AE가 이상이라고 했으나 LGBM이 'Normal'이라거나 신뢰도가 낮으면 원인 불명 처리
-                if pred_label == 'Normal' or max_prob < self.lgbm_confidence_threshold:
-                    final_status = "UNKNOWN FAULT"
-            else:
-                final_status = "Normal"
                 
             return {
                 'status': final_status,
                 'mse': mse,
-                'current_threshold': current_threshold, # [추가] 모니터링을 위해 현재 임계치도 반환
+                'current_threshold': current_threshold,
                 'confidence': max_prob,
                 'is_anomaly': is_anomaly,
-                'predicted_label': pred_label
+                'predicted_label': pred_label,
+                'ae_anomaly': ae_anomaly
             }
+            
+        except Exception as e:
+            logger.error(f"예측 중 예외 발생: {str(e)}")
+            return {"status": "ERROR", "message": str(e)}
             
         # [추가] 처리 중 예외 발생 시 로그를 남기고 시스템 지속
         except Exception as e:
