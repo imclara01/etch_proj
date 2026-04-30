@@ -87,14 +87,15 @@ with st.sidebar:
                 st.toast("Test alert sent!")
     
     st.markdown("---")
-    threshold_override = st.slider("Anomaly Sensitivity", 0.0, 1.0, float(engine.threshold), 0.01)
-    engine.threshold = threshold_override
+    threshold_override = st.slider("Anomaly Sensitivity", 0.0, 1.0, float(engine.base_threshold), 0.01)
+    engine.base_threshold = threshold_override
     
     st.caption("Agent Status: Online 🟢")
 
 # --- UI State Management ---
 if 'history' not in st.session_state: st.session_state.history = []
 if 'mse_trend' not in st.session_state: st.session_state.mse_trend = {} # Per equipment
+if 'threshold_trend' not in st.session_state: st.session_state.threshold_trend = {} # New
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = {}
 if 'executor' not in st.session_state: st.session_state.executor = ThreadPoolExecutor(max_workers=5)
 if 'active_analysis' not in st.session_state: st.session_state.active_analysis = None
@@ -111,7 +112,9 @@ def perform_ai_analysis(fault_status, predicted_label, metrics_dict, run_name, a
     try:
         # Use predicted_label for SHAP even if status is UNKNOWN
         pred_idx = list(engine.le.classes_).index(predicted_label)
-        analysis_data = explainer.explain(engine.scaler.transform(pd.DataFrame([metrics_dict])[engine.features]), metrics_dict, pred_idx)
+        m_df = pd.DataFrame([metrics_dict])
+        m_df.columns = m_df.columns.str.strip()
+        analysis_data = explainer.explain(engine.scaler.transform(m_df[engine.features]), metrics_dict, pred_idx)
     except Exception as e:
         print(f"❌ SHAP Analysis Failed for {predicted_label}: {e}")
         analysis_data = []
@@ -172,10 +175,58 @@ def show_analysis_dialog(analysis):
 # --- Main Interface ---
 st.markdown("<h1 class='main-header'>Semiconductor Anomaly Command Center</h1>", unsafe_allow_html=True)
 
-# Check if we need to show analysis dialog
-if st.session_state.active_analysis:
-    show_analysis_dialog(st.session_state.active_analysis)
-    st.session_state.active_analysis = None # Reset after showing
+# Tabs for different views
+tab1, tab2 = st.tabs(["🎮 Monitoring", "📊 System Validation"])
+
+with tab2:
+    st.markdown("### 📈 Latest Validation Performance")
+    # Load latest report
+    report_dir = 'validation/results'
+    reports = [f for f in os.listdir(report_dir) if f.startswith('report_') and f.endswith('.txt')]
+    if reports:
+        latest_report = sorted(reports)[-1]
+        with open(os.path.join(report_dir, latest_report), 'r', encoding='utf-8') as f:
+            report_text = f.read()
+        
+        col_m1, col_m2 = st.columns(2)
+        # Parse recall/precision from text (simple regex/split)
+        try:
+            recall_val = report_text.split("- Recall: ")[1].split("\n")[0]
+            precision_val = report_text.split("- Precision: ")[1].split("\n")[0]
+            col_m1.metric("Anomaly Recall", f"{float(recall_val):.1%}")
+            col_m2.metric("Anomaly Precision", f"{float(precision_val):.1%}")
+        except:
+            st.text("Metric parsing failed. Showing raw report.")
+        
+        with st.expander("📄 Full Validation Report"):
+            st.text(report_text)
+    
+    st.markdown("---")
+    st.markdown("### 🔬 Distribution Gap Analysis (Real vs. Synthetic)")
+    gap_path = 'validation/results/gap_sensors.json'
+    if os.path.exists(gap_path):
+        with open(gap_path, 'r') as f:
+            gap_data = json.load(f)
+        gap_df = pd.DataFrame.from_dict(gap_data, orient='index').reset_index()
+        gap_df.columns = ['Sensor', 'Real_Mean', 'Synth_Mean', 'Mean_Diff', 'Real_Std', 'Synth_Std', 'Std_Diff']
+        
+        # Plot top 10 gap sensors
+        top_gaps = gap_df.nlargest(10, 'Mean_Diff')
+        fig_gap = px.bar(top_gaps, x='Sensor', y='Mean_Diff', 
+                         title='Top 10 Sensors by Mean Distribution Gap (%)',
+                         color='Mean_Diff', color_continuous_scale='Reds')
+        fig_gap.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig_gap, use_container_width=True)
+        
+        st.success(f"✅ Statistical Realignment Active: {len(gap_df)} sensors balanced.")
+    else:
+        st.info("No gap analysis data found. Run validation/data_quality.py first.")
+
+with tab1:
+    # Check if we need to show analysis dialog
+    if st.session_state.active_analysis:
+        show_analysis_dialog(st.session_state.active_analysis)
+        st.session_state.active_analysis = None # Reset after showing
 
 # Grid Layout for 10 Equipments (2x5)
 eq_placeholders = {}
@@ -229,8 +280,14 @@ if simulation_active:
         
         # Update Trend Data
         if eq_id not in st.session_state.mse_trend: st.session_state.mse_trend[eq_id] = []
+        if eq_id not in st.session_state.threshold_trend: st.session_state.threshold_trend[eq_id] = []
+        
         st.session_state.mse_trend[eq_id].append(result['mse'])
-        if len(st.session_state.mse_trend[eq_id]) > 30: st.session_state.mse_trend[eq_id].pop(0)
+        st.session_state.threshold_trend[eq_id].append(result.get('current_threshold', engine.base_threshold))
+        
+        if len(st.session_state.mse_trend[eq_id]) > 30: 
+            st.session_state.mse_trend[eq_id].pop(0)
+            st.session_state.threshold_trend[eq_id].pop(0)
 
         # Update Equipment Card
         if eq_id in eq_placeholders:
@@ -245,8 +302,9 @@ if simulation_active:
             
             with ph['chart']:
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(y=st.session_state.mse_trend[eq_id], mode='lines', line=dict(color='#4285F4', width=2), fill='tozeroy'))
-                fig.add_hline(y=engine.threshold, line_dash="dash", line_color="#EA4335")
+                fig.add_trace(go.Scatter(y=st.session_state.mse_trend[eq_id], mode='lines', line=dict(color='#4285F4', width=2), fill='tozeroy', name='MSE'))
+                # Plot dynamic threshold as a line
+                fig.add_trace(go.Scatter(y=st.session_state.threshold_trend[eq_id], mode='lines', line=dict(color='#EA4335', width=1, dash='dash'), name='Dynamic Threshold'))
                 fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, t=0, b=0), height=120, showlegend=False, yaxis=dict(showticklabels=False), xaxis=dict(showticklabels=False))
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 

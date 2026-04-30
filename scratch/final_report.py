@@ -31,7 +31,8 @@ model_ae.load_state_dict(ae_data['model_state_dict'])
 model_ae.eval()
 
 print(f"📊 최종 보고서 생성 중... (임계값: {THRESHOLD:.4f})")
-test_df = pd.read_csv('data/test_split.csv')
+test_df = pd.read_csv('data/test_tstr.csv')
+test_df.columns = test_df.columns.str.strip() # [추가] 컬럼명 공백 제거
 X_scaled = scaler.transform(test_df[FEATURES].fillna(0))
 
 # --- 2. 2단계 추론 루프 ---

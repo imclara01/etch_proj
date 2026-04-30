@@ -1,0 +1,27 @@
+검증 일시: 20260429_160255
+동적 임계치 사용 여부: True
+
+[Area 1] 이상 탐지 성능
+- Recall: 0.2000
+- Precision: 0.3585
+- F1: 0.2568
+
+[Area 2] 결함 분류 성능
+- Accuracy: 0.7575
+- Macro F1: 0.1100
+
+[상세 분류 결과]
+               precision    recall  f1-score   support
+
+     He Chuck       0.00      0.00      0.00        38
+       Normal       0.84      0.92      0.88       874
+        Pr +1       0.00      0.00      0.00        38
+        Pr +3       0.00      0.00      0.00        38
+       RF +10       0.00      0.00      0.00         0
+       RF -12       0.00      0.00      0.00        38
+      TCP +20       0.00      0.00      0.00        38
+UNKNOWN FAULT       0.00      0.00      0.00         0
+
+     accuracy                           0.76      1064
+    macro avg       0.11      0.12      0.11      1064
+ weighted avg       0.69      0.76      0.72      1064
