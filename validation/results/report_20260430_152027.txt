@@ -1,0 +1,21 @@
+검증 일시: 20260430_152027
+동적 임계치 사용 여부: True
+
+[Area 1] 이상 탐지 성능
+- Recall: 0.0000
+- Precision: 0.0000
+- F1: 0.0000
+
+[Area 2] 결함 분류 성능
+- Accuracy: 0.9777
+- Macro F1: 0.4944
+
+[상세 분류 결과]
+               precision    recall  f1-score   support
+
+       Normal       1.00      0.98      0.99      3950
+UNKNOWN FAULT       0.00      0.00      0.00         0
+
+     accuracy                           0.98      3950
+    macro avg       0.50      0.49      0.49      3950
+ weighted avg       1.00      0.98      0.99      3950

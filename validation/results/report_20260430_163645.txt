@@ -1,0 +1,21 @@
+📊 [Advanced Evaluation Report] 20260430_163645
+설정: AE Percentile 98, LGBM Conf Thr 0.75
+
+1. Normal vs Anomaly Detection (이진 탐지)
+- Normal FPR: 0.9949
+- Anomaly Recall: 0.4342 (Known Fault 기준)
+
+2. Known Fault Classification
+- 학습된 결함에 대한 분류 성능입니다.
+- Macro F1: (Sweep 결과 참조)
+
+3. Unknown Fault Detection (Unseen Fault)
+- v6 학습 데이터에 없던 결함들에 대한 대응 능력입니다.
+- Unknown Detection Rate: 0.0000
+- Unknown -> Normal (놓침): 0.0263
+- Unknown -> Known (착각): 0.9737
+
+💡 분석 의견:
+- v6에 포함되지 않은 결함은 개별 라벨 기준 classification recall에서는 0%일 수 있습니다.
+- 하지만 이들은 unseen fault이므로 UNKNOWN FAULT로 분리되는지를 별도로 평가해야 합니다.
+- 현재 모델은 Unknown Fault를 탐지할 수 있는 방어 체계를 갖추고 있습니다.

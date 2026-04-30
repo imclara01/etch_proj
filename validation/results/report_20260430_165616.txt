@@ -1,0 +1,23 @@
+📊 [Advanced Evaluation Report] 20260430_165616
+==================================================
+최적 권장 설정: AE Percentile 98, LGBM Conf Thr 0.75
+
+1. Normal vs Anomaly Detection (이진 탐지 성능)
+- Normal FPR (오탐율): 2.03%
+- Anomaly Detection 성공률: 43.42%
+
+2. Known Fault Classification (기존 결함 분류)
+- v6 학습 데이터에 포함된 결함에 대한 정확도입니다.
+- 분류 성공률 (Recall): 43.42%
+
+3. Unknown Fault Detection (미지 결함 탐지)
+- v6 학습 데이터에 없던 결함(Unseen)들에 대한 대응 능력입니다.
+- Unknown Detection Rate: 0.00%
+- Unknown -> Normal (미탐지): 87.17%
+- Unknown -> Known (오분류): 12.83%
+
+💡 핵심 분석 의견:
+- v6에 포함되지 않은 결함은 개별 라벨 기준 classification recall에서는 0%로 보일 수 있으나,
+  이는 해당 결함을 '모르는 결함(UNKNOWN)'으로 올바르게 분리하고 있는지를 보아야 합니다.
+- 현재 모델은 AE의 MSE가 높고 LGBM의 신뢰도가 낮을 때 UNKNOWN으로 분류하는 방어 체계를 갖추고 있습니다.
+- 향후 미지 결함 탐지율을 높이려면 AE의 감도(Percentile)를 더 낮추거나, LGBM의 확신 기준을 더 높여야 합니다.

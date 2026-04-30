@@ -1,0 +1,6 @@
+Unseen_Fault,Distribution
+TCP +50,Normal 100.0%
+Pr +3,"Normal 97.4%, Cl2 -5 2.6%"
+Cl2 -10,Normal 100.0%
+RF -12,"TCP +30 50.0%, Normal 50.0%"
+BCl3 +10,Normal 100.0%
