@@ -84,15 +84,15 @@ def re_train_models():
         if (epoch+1) % 10 == 0:
             print(f"   - Epoch [{epoch+1}/30], Loss: {loss.item():.6f}")
             
-    # 5. 임계치(Threshold) 재설정
+    # 5. 임계치(Threshold) 재설정 (Suspect Zone 고도화)
     model_ae.eval()
     with torch.no_grad():
         recon = model_ae(X_train_tensor)
         mse = torch.mean((X_train_tensor - recon)**2, dim=1).numpy()
-        # 보수적으로 95분위수를 기본 임계치로 설정
-        new_threshold = np.percentile(mse, 95)
-    
-    print(f"🎯 새로운 기본 임계치 설정됨: {new_threshold:.6f}")
+        # [고도화] 다중 임계치 설정
+        new_threshold = np.percentile(mse, 90) # 기존 90%
+        suspect_threshold = np.percentile(mse, 70) # 의심 구역 70%
+        print(f"🎯 임계치 설정 완료: Base {new_threshold:.6f}, Suspect {suspect_threshold:.6f}")
 
     # 6. LightGBM 학습
     print("🏋️  LightGBM 학습 시작 (Sklearn API)...")
@@ -108,9 +108,11 @@ def re_train_models():
 
     # 7. 모델 및 상태 저장
     os.makedirs('models', exist_ok=True)
+    # 모델 저장 시 suspect_threshold 추가
     torch.save({
         'model_state_dict': model_ae.state_dict(),
         'threshold': float(new_threshold),
+        'suspect_threshold': float(suspect_threshold),
         'features': features
     }, 'models/autoencoder.pth')
     
