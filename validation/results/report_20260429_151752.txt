@@ -1,0 +1,20 @@
+Assessment Timestamp: 20260429_151752
+Dynamic Thresholding: True
+Anomaly Detection (Recall/Precision/F1): 0.0474, 0.5000, 0.0865
+Classification Accuracy: 0.8130
+Macro F1: 0.1287
+
+Classification Report:
+               precision    recall  f1-score   support
+
+     He Chuck       0.00      0.00      0.00        38
+       Normal       0.83      0.99      0.90       874
+        Pr +1       0.00      0.00      0.00        38
+        Pr +3       0.00      0.00      0.00        38
+       RF -12       0.00      0.00      0.00        38
+      TCP +20       0.00      0.00      0.00        38
+UNKNOWN FAULT       0.00      0.00      0.00         0
+
+     accuracy                           0.81      1064
+    macro avg       0.12      0.14      0.13      1064
+ weighted avg       0.68      0.81      0.74      1064

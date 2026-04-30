@@ -7,11 +7,12 @@ import os
 class SHAPExplainer:
     def __init__(self, lgb_model, features, stats_path='models/sensor_stats.json'):
         self.explainer = shap.TreeExplainer(lgb_model)
-        self.features = features
+        self.features = [f.strip() for f in features]
         self.stats = {}
         if os.path.exists(stats_path):
             with open(stats_path, 'r') as f:
-                self.stats = json.load(f)
+                raw_stats = json.load(f)
+                self.stats = {k.strip(): v for k, v in raw_stats.items()}
         else:
             print(f"⚠️ Warning: {stats_path} not found. Normal ranges will be unavailable.")
         

@@ -58,9 +58,9 @@ class InferenceEngine:
         self.lgbm_confidence_threshold = lgbm_confidence_threshold
         
         # [추가] 동적 임계치 알고리즘 (Sliding Window) 세팅
-        self.window_size = window_size         # 최근 몇 개의 데이터를 기준으로 삼을지 (예: 100개)
-        self.std_multiplier = std_multiplier   # 표준편차 가중치 (보통 3-Sigma 규칙 사용)
-        self.mse_history = deque(maxlen=self.window_size) # 최근 오차(MSE)를 저장할 공간 (오래된 건 자동 삭제됨)
+        self.window_size = window_size         # 최근 몇 개의 데이터를 기준으로 삼을지
+        self.std_multiplier = std_multiplier   # [수정] 2.0 -> 3.0 (더 보수적으로 정상 범위 설정)
+        self.mse_history = deque(maxlen=self.window_size)
 
         # [추가] CPU/GPU 자동 할당 (대용량 처리용)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -78,7 +78,7 @@ class InferenceEngine:
         # [변경] GPU/CPU 디바이스 환경에 맞춰서 텐서를 로드하도록 map_location 추가
         ae_path = os.path.join(self.model_dir, 'autoencoder.pth')
         ae_data = torch.load(ae_path, map_location=self.device, weights_only=False)
-        self.features = ae_data['features']
+        self.features = [f.strip() for f in ae_data['features']]
         
         # [기존] self.threshold = ae_data['threshold']
         # [변경] 고정 임계치는 '최소 방어선(base_threshold)'으로만 사용
@@ -99,6 +99,9 @@ class InferenceEngine:
         # [추가] 센서 통신 끊김 등으로 빈 데이터가 올 때 서버 다운 방지
         if not metrics_dict:
             return {"status": "ERROR", "message": "입력 데이터가 없습니다."}
+        
+        # [추가] 모든 입력 키의 공백을 제거하여 모델 피처와 일치시킴
+        metrics_dict = {k.strip(): v for k, v in metrics_dict.items()}
 
         try:
             # [기존] X_df = pd.DataFrame([row_dict])[self.features] -> 느린 Pandas 방식
@@ -116,37 +119,43 @@ class InferenceEngine:
                 mse = torch.mean((X_tensor - recon)**2).item()
             
             # --- [추가/핵심] 동적 임계치 알고리즘 (Sliding Window) ---
-            capped_mse = min(mse, self.base_threshold * 2.0)  # 상한선(Cap) 씌우기
-            self.mse_history.append(capped_mse)              # 안전하게 기록장에 추가
+            # [수정] Threshold Drift 방지: 임계치를 먼저 계산하고, 정상일 때만 기록을 업데이트함
             
-            # 기록장에 데이터가 어느 정도(최소 10개) 쌓이면 동적 계산 시작
-            if len(self.mse_history) >= 10: 
-                current_mean = np.mean(self.mse_history) # 최근 MSE의 평균
-                current_std = np.std(self.mse_history)   # 최근 MSE의 편차(흔들림)
-                # 평균 + (표준편차 * 가중치)를 새로운 실시간 임계치로 설정
-                dynamic_threshold = current_mean + (self.std_multiplier * current_std)
+            # 1. 현재 기록(mse_history) 기반으로 임계치 먼저 산출
+            if len(self.mse_history) >= 10:
+                current_mean = np.mean(self.mse_history)
+                current_std = np.std(self.mse_history)
+                # [수정] 지나치게 민감하게 하향되는 것을 방지하기 위해 최소 표준편차 보정값(0.05) 추가
+                dynamic_threshold = current_mean + (self.std_multiplier * max(current_std, 0.05))
                 
-                # 단, 장비가 완전히 고장나서 동적 임계치 자체가 너무 높아지는 것을 막기 위해 기존 고정값과 비교
-                current_threshold = max(dynamic_threshold, self.base_threshold)
+                # [수정] 상/하한선(Clip) 범위를 base_threshold 기준으로 더 안정적으로 설정
+                upper_bound = self.base_threshold * 2.0
+                lower_bound = self.base_threshold * 0.5  # [수정] 너무 낮아지지 않도록 제한
+                current_threshold = max(min(dynamic_threshold, upper_bound), lower_bound)
             else:
-                # 초기 구동 시에는 기존의 고정 임계치 사용
                 current_threshold = self.base_threshold
-            # --------------------------------------------------------
-            
-            # [기존] is_anomaly = mse > self.threshold
-            # [변경] 위에서 계산한 '실시간 동적 임계치'와 현재 오차를 비교
-            is_anomaly = mse > current_threshold
-            
+
+            # 2. 이상 여부 판별 (Hybrid 방식: AE 임계치 초과 OR LGBM 고신뢰도 예측)
+            # [수정] AE가 놓친 미세 결함을 LGBM의 고신뢰도(0.9 이상) 판단으로 보완
             probs = self.lgb_model.predict_proba(X_scaled)[0]
             max_prob = float(np.max(probs))
             pred_idx = int(np.argmax(probs))
             pred_label = self.le.inverse_transform([pred_idx])[0]
+
+            ae_anomaly = mse > current_threshold
+            lgbm_high_conf = (max_prob > 0.9 and pred_label != 'Normal')
+            is_anomaly = ae_anomaly or lgbm_high_conf
+
+            # 3. [핵심] 정상 데이터인 경우에만 history 업데이트 (Threshold Drift 방지)
+            if not is_anomaly:
+                capped_mse = min(mse, self.base_threshold * 2.0)
+                self.mse_history.append(capped_mse)
+            # --------------------------------------------------------
             
             final_status = pred_label
             if is_anomaly:
-                # [기존] if max_prob < 0.6 or pred_label == 'Normal':
-                # [변경] 하드코딩된 숫자 제거
-                if max_prob < self.lgbm_confidence_threshold or pred_label == 'Normal':
+                # [변경] AE가 이상이라고 했으나 LGBM이 'Normal'이라거나 신뢰도가 낮으면 원인 불명 처리
+                if pred_label == 'Normal' or max_prob < self.lgbm_confidence_threshold:
                     final_status = "UNKNOWN FAULT"
             else:
                 final_status = "Normal"

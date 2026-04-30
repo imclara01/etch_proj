@@ -1,0 +1,11 @@
+Actual,Predicted,Top_1_Sensor,Top_2_Sensor,Top_3_Sensor
+Pr +3,Normal,RF Btm Rfl Pwr,S3I2  ,BCl3 Flow     
+Pr +3,Normal,RF Btm Rfl Pwr,S34V5 ,S3I2  
+Pr +3,Normal,RF Btm Rfl Pwr,S34V5 ,S2P1  
+Pr +3,UNKNOWN FAULT,S2P5  ,Vat Valve     ,611.5.1
+Pr +3,Normal,RF Btm Rfl Pwr,S34V5 ,S3I2  
+Pr +3,Normal,RF Btm Rfl Pwr,S34V5 ,S3I2  
+Pr +3,UNKNOWN FAULT,S2P5  ,Vat Valve     ,327.5.1
+Pr +3,Normal,RF Btm Rfl Pwr,S34V5 ,S3I2  
+Pr +3,Normal,RF Btm Rfl Pwr,S3I2  ,S34V5 
+Pr +3,Normal,RF Btm Rfl Pwr,S34V5 ,S3I2  
