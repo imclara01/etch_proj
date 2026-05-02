@@ -13,3 +13,12 @@ langchain
 langchain-openai
 h5py
 slack-sdk
+torch
+joblib
+python-dotenv
+neo4j
+requests
+confluent-kafka
+fastapi
+uvicorn[standard]
+websockets

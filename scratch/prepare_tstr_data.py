@@ -35,9 +35,9 @@ def load_and_align_real():
     aligned_data = []
     
     # Identify feature columns
-    o_feat = oes.columns.difference(['Data_Type', 'Run_Name', 'Time_Step', 'run_id'])
-    m_feat = mach.columns.difference(['Data_Type', 'Run_Name', 'Time_Step', 'Time', 'Step Number', 'run_id'])
-    r_feat = rfm.columns.difference(['Data_Type', 'Run_Name', 'Time_Step', 'TIME', 'run_id'])
+    o_feat = oes.columns.difference(['Data_Type', 'Run_Name', 'Fault_Name', 'Time_Step', 'run_id'])
+    m_feat = mach.columns.difference(['Data_Type', 'Run_Name', 'Fault_Name', 'Time_Step', 'Time', 'Step Number', 'run_id'])
+    r_feat = rfm.columns.difference(['Data_Type', 'Run_Name', 'Fault_Name', 'Time_Step', 'TIME', 'run_id'])
     
     for rid in all_runs:
         o_sub = oes[oes['run_id'] == rid].sort_values('Time_Step')
@@ -52,8 +52,9 @@ def load_and_align_real():
         r_prog = np.linspace(0, 1, len(r_sub))
         
         # Interpolate MACHINE and RFM to OES time steps
-        m_interp = pd.DataFrame({col: np.interp(o_prog, m_prog, m_sub[col]) for col in m_feat})
-        r_interp = pd.DataFrame({col: np.interp(o_prog, r_prog, r_sub[col]) for col in r_feat})
+        # [Fix] Ensure numeric conversion to avoid TypeError: Cannot cast array data from dtype('O')
+        m_interp = pd.DataFrame({col: np.interp(o_prog, m_prog, pd.to_numeric(m_sub[col], errors='coerce')) for col in m_feat})
+        r_interp = pd.DataFrame({col: np.interp(o_prog, r_prog, pd.to_numeric(r_sub[col], errors='coerce')) for col in r_feat})
         
         # Metadata from MACHINE
         m_meta = pd.DataFrame({

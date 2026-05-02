@@ -110,34 +110,60 @@ class InferenceEngine:
             pred_idx = int(np.argmax(probs))
             pred_label = self.le.inverse_transform([pred_idx])[0]
 
-            # 3. 고도화된 5단계 판단 로직
+            # 3. 고도화된 5단계 판단 로직 (완화된 탐지 기준)
             ae_anomaly = mse > current_threshold
             ae_suspect = mse > self.suspect_threshold
             
             if ae_anomaly:
-                if max_prob >= self.lgbm_confidence_threshold:
+                # AE가 명확히 이상 → LightGBM 신뢰도에 따라 분류
+                if max_prob >= self.lgbm_confidence_threshold and pred_label != 'Normal':
                     final_status = pred_label
                     is_anomaly = True
                 else:
                     final_status = "UNKNOWN FAULT"
                     is_anomaly = True
             elif ae_suspect:
-                # [신규] Suspect Zone: AE는 정상이라지만 MSE가 약간 높고, LGBM이 극도로 불확실할 때
-                if max_prob < 0.3: # 극도로 불확실
+                # Suspect Zone: MSE가 약간 높음
+                if pred_label != 'Normal' and max_prob >= 0.7:
+                    # LightGBM이 Fault로 분류하고 신뢰도가 어느 정도 있으면 이상으로 판정
+                    final_status = pred_label
+                    is_anomaly = True
+                elif max_prob < 0.3:
+                    # 극도로 불확실
                     final_status = "UNKNOWN FAULT"
                     is_anomaly = True
                 else:
                     final_status = "Normal"
                     is_anomaly = False
             else:
-                if max_prob >= self.very_high_threshold and pred_label != 'Normal':
+                # AE 정상 구간이더라도 LightGBM이 높은 확신으로 Fault를 예측하면 탐지
+                if max_prob >= 0.85 and pred_label != 'Normal':
                     final_status = pred_label
                     is_anomaly = True
                 else:
                     final_status = "Normal"
                     is_anomaly = False
 
-            # 4. 정상 데이터인 경우에만 history 업데이트 (Threshold Drift 방지)
+            # 4. 상위 3개 후보군 추출 (Top-3 Candidates)
+            # 이상(Anomaly)인 경우 'Normal'을 제외하고 결함 후보만 추출하여 재현율 보정
+            filtered_probs = probs.copy()
+            normal_idx = list(self.le.classes_).index('Normal')
+            
+            if is_anomaly:
+                filtered_probs[normal_idx] = 0 # 정상을 제외
+                # 남은 확률들로 재정규화 (합이 1이 되도록)
+                sum_probs = np.sum(filtered_probs)
+                if sum_probs > 0:
+                    filtered_probs = filtered_probs / sum_probs
+            
+            top_indices = np.argsort(filtered_probs)[::-1][:3]
+            top_candidates = []
+            for idx in top_indices:
+                label = self.le.inverse_transform([idx])[0]
+                conf = float(filtered_probs[idx])
+                top_candidates.append({"label": label, "confidence": conf})
+
+            # 5. 정상 데이터인 경우에만 history 업데이트 (Threshold Drift 방지)
             if not is_anomaly:
                 capped_mse = min(mse, self.base_threshold * 2.0)
                 self.mse_history.append(capped_mse)
@@ -149,7 +175,8 @@ class InferenceEngine:
                 'confidence': max_prob,
                 'is_anomaly': is_anomaly,
                 'predicted_label': pred_label,
-                'ae_anomaly': ae_anomaly
+                'ae_anomaly': ae_anomaly,
+                'top_candidates': top_candidates  # [추가] 상위 3개 후보 정보
             }
             
         except Exception as e:
